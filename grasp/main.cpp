@@ -7,12 +7,15 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <termios.h>  //_getch
+#include <iostream>
 #include <string.h>
 #include <pthread.h>
 #include "canAPI.h"
 #include "rDeviceAllegroHandCANDef.h"
 #include "RockScissorsPaper.h"
 #include <BHand/BHand.h>
+#include <zmq.hpp>
+#include <vector>
 
 #define PEAKCAN (1)
 
@@ -44,7 +47,7 @@ double tau_des[MAX_DOF];
 double cur_des[MAX_DOF];
 
 // USER HAND CONFIGURATION
-const bool	RIGHT_HAND = false;
+const bool	RIGHT_HAND = true;
 const int	HAND_VERSION = 4;
 
 const double tau_cov_const_v4 = 1200.0; // 1200.0 for SAH040xxxxx
@@ -156,11 +159,18 @@ static void* ioThreadProc(void* inst)
                     }
 
                     // print joint angles
-//                    for (int i=0; i<4; i++)
-//                    {
-//                        printf(">CAN(%d): Joint[%d] Pos : %5.1f %5.1f %5.1f %5.1f\n"
-//                            , CAN_Ch, i, q[i*4+0]*RAD2DEG, q[i*4+1]*RAD2DEG, q[i*4+2]*RAD2DEG, q[i*4+3]*RAD2DEG);
-//                    }
+                //     printf("joint angles (radians):\n");
+                //    for (int i=0; i<4; i++)
+                //    {
+                //        printf("\t>CAN(%d): Joint[%d] Pos (rad) : %5.5f %5.5f %5.5f %5.5f\n"
+                //            , CAN_Ch, i, q[i*4+0], q[i*4+1], q[i*4+2], q[i*4+3]);
+                //    }
+                //    printf("joint angles (degrees):\n");
+                //    for (int i=0; i<4; i++)
+                //    {
+                //        printf("\t>CAN(%d): Joint[%d] Pos (deg) : %5.5f %5.5f %5.5f %5.5f\n"
+                //            , CAN_Ch, i, q[i*4+0]*RAD2DEG, q[i*4+1]*RAD2DEG, q[i*4+2]*RAD2DEG, q[i*4+3]*RAD2DEG);
+                //    }
 
                     // compute joint torque
                     ComputeTorque();
@@ -227,64 +237,107 @@ void MainLoop()
 {
     bool bRun = true;
 
+    // Set up zmq
+    zmq::context_t ctx;
+    zmq::socket_t socket(ctx, ZMQ_REP);
+    socket.bind("tcp://*:5556");
+    std::cout << "ZMQ setup done" << endl;
+
     while (bRun)
     {
-        int c = Getch();
-        switch (c)
+        std::cout << "Awaiting command" << endl;
+        // Wait for ZMQ message
+        zmq::message_t recv_msg; // TODO: figure out size
+        socket.recv(&recv_msg);
+        // parse the message
+        std::string recv_str = recv_msg.to_string();
+        std::stringstream ss(recv_str);
+        std::vector<double> vect;
+        double i;
+        while (ss >> i)
         {
-        case 'q':
-            if (pBHand) pBHand->SetMotionType(eMotionType_NONE);
-            bRun = false;
-            break;
-
-        case 'h':
-            if (pBHand) pBHand->SetMotionType(eMotionType_HOME);
-            break;
-
-        case 'r':
-            if (pBHand) pBHand->SetMotionType(eMotionType_READY);
-            break;
-
-        case 'g':
-            if (pBHand) pBHand->SetMotionType(eMotionType_GRASP_3);
-            break;
-
-        case 'k':
-            if (pBHand) pBHand->SetMotionType(eMotionType_GRASP_4);
-            break;
-
-        case 'p':
-            if (pBHand) pBHand->SetMotionType(eMotionType_PINCH_IT);
-            break;
-
-        case 'm':
-            if (pBHand) pBHand->SetMotionType(eMotionType_PINCH_MT);
-            break;
-
-        case 'a':
-            if (pBHand) pBHand->SetMotionType(eMotionType_GRAVITY_COMP);
-            break;
-
-        case 'e':
-            if (pBHand) pBHand->SetMotionType(eMotionType_ENVELOP);
-            break;
-
-        case 'f':
-            if (pBHand) pBHand->SetMotionType(eMotionType_NONE);
-            break;
-
-        case '1':
-            MotionRock();
-            break;
-
-        case '2':
-            MotionScissors();
-            break;
-
-        case '3':
-            MotionPaper();
-            break;
+            vect.push_back(i);
+            if (ss.peek() == ',')
+            ss.ignore();
         }
+        assert(vect.size() == 16);
+        std::cout << "Setting Allegro q to ";
+        for (i=0; i< vect.size()-1; i++)
+        std::cout << vect.at(i) <<", ";
+        std::cout << vect.at(vect.size()-1) << endl;
+        // Set the joint angle
+        // for (int i=0; i<16; i++)
+        //   q_des[i] = scissors[i];
+        if (pBHand){
+        pBHand->SetMotionType(eMotionType_JOINT_PD);
+        SetTargetQ(vect);
+        std::string succ_str="succ";
+        zmq::message_t succ_msg (succ_str.length());
+        memcpy (succ_msg.data (), succ_str.data(), succ_str.length());
+        socket.send(succ_msg, zmq::send_flags::none);
+        } 
+        else{
+        std::string fail_str="fail";
+        zmq::message_t fail_msg (fail_str.length());
+        memcpy (fail_msg.data (), fail_str.data(), fail_str.length());
+        socket.send(fail_msg, zmq::send_flags::none);
+        }
+        // int c = Getch();
+        // switch (c)
+        // {
+        // case 'q':
+        //     if (pBHand) pBHand->SetMotionType(eMotionType_NONE);
+        //     bRun = false;
+        //     break;
+
+        // case 'h':
+        //     if (pBHand) pBHand->SetMotionType(eMotionType_HOME);
+        //     break;
+
+        // case 'r':
+        //     if (pBHand) pBHand->SetMotionType(eMotionType_READY);
+        //     break;
+
+        // case 'g':
+        //     if (pBHand) pBHand->SetMotionType(eMotionType_GRASP_3);
+        //     break;
+
+        // case 'k':
+        //     if (pBHand) pBHand->SetMotionType(eMotionType_GRASP_4);
+        //     break;
+
+        // case 'p':
+        //     if (pBHand) pBHand->SetMotionType(eMotionType_PINCH_IT);
+        //     break;
+
+        // case 'm':
+        //     if (pBHand) pBHand->SetMotionType(eMotionType_PINCH_MT);
+        //     break;
+
+        // case 'a':
+        //     if (pBHand) pBHand->SetMotionType(eMotionType_GRAVITY_COMP);
+        //     break;
+
+        // case 'e':
+        //     if (pBHand) pBHand->SetMotionType(eMotionType_ENVELOP);
+        //     break;
+
+        // case 'f':
+        //     if (pBHand) pBHand->SetMotionType(eMotionType_NONE);
+        //     break;
+
+        // case '1':
+        //     MotionRock();
+        //     break;
+
+        // case '2':
+        //     MotionScissors();
+        //     break;
+
+        // case '3':
+        //     MotionPaper();
+        //     break;
+        // }
     }
 }
 

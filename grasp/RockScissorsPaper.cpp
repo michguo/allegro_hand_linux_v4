@@ -1,6 +1,7 @@
 
 #include "rDeviceAllegroHandCANDef.h"
 #include <BHand/BHand.h>
+#include <vector>
 
 // ROCK-SCISSORS-PAPER(LEFT HAND)
 //static double rock[] = {
@@ -80,6 +81,14 @@ void MotionPaper()
 {
 	for (int i=0; i<16; i++)
 		q_des[i] = paper[i];
+	if (pBHand) pBHand->SetMotionType(eMotionType_JOINT_PD);
+	SetGainsRSP();
+}
+
+void SetTargetQ(std::vector<double> q)
+{
+	for (int i=0; i<16; i++)
+		q_des[i] = q[i];
 	if (pBHand) pBHand->SetMotionType(eMotionType_JOINT_PD);
 	SetGainsRSP();
 }
