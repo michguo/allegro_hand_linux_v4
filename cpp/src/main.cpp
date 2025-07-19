@@ -16,7 +16,8 @@
 #include <BHand/BHand.h>
 #include <zmq.hpp>
 #include <vector>
-
+#include <nlohmann/json.hpp>
+#include "allegroZmqJsonParser.h"
 #define PEAKCAN (1)
 
 typedef char    TCHAR;
@@ -41,6 +42,7 @@ double curTime = 0.0;
 /////////////////////////////////////////////////////////////////////////////////////////
 // for BHand library
 BHand* pBHand = NULL;
+AllegroZmqJsonParser* jsonParser = NULL;
 double q[MAX_DOF];
 double q_des[MAX_DOF];
 double tau_des[MAX_DOF];
@@ -242,115 +244,56 @@ void MainLoop()
     zmq::socket_t socket(ctx, ZMQ_REP);
     socket.bind("tcp://*:5556");
     std::cout << "ZMQ setup done" << endl;
+    
+    // Create JSON parser
+    jsonParser = new AllegroZmqJsonParser(pBHand);
 
     while (bRun)
     {
         std::cout << "Awaiting command" << endl;
         // Wait for ZMQ message
-        zmq::message_t recv_msg; // TODO: figure out size
+        zmq::message_t recv_msg;
         socket.recv(&recv_msg);
-        // parse the message
+        
+        // Get message as string
         std::string recv_str = recv_msg.to_string();
-        std::stringstream ss(recv_str);
-        std::vector<double> vect;
-        double i;
-        while (ss >> i)
-        {
-            vect.push_back(i);
-            if (ss.peek() == ',')
-            ss.ignore();
-        }
-        assert(vect.size() == 16);
-        std::cout << "Setting Allegro q to ";
-        for (i=0; i< vect.size()-1; i++)
-        std::cout << vect.at(i) <<", ";
-        std::cout << vect.at(vect.size()-1) << endl;
-        // Set the joint angle
-        // for (int i=0; i<16; i++)
-        //   q_des[i] = scissors[i];
-        if (pBHand){
-        pBHand->SetMotionType(eMotionType_JOINT_PD);
-        SetTargetQ(vect);
-        std::string succ_str="succ";
-        zmq::message_t succ_msg (succ_str.length());
-        memcpy (succ_msg.data (), succ_str.data(), succ_str.length());
-        socket.send(succ_msg, zmq::send_flags::none);
-        } 
-        else{
-        std::string fail_str="fail";
-        zmq::message_t fail_msg (fail_str.length());
-        memcpy (fail_msg.data (), fail_str.data(), fail_str.length());
-        socket.send(fail_msg, zmq::send_flags::none);
-        }
-        // int c = Getch();
-        // switch (c)
-        // {
-        // case 'q':
-        //     if (pBHand) pBHand->SetMotionType(eMotionType_NONE);
-        //     bRun = false;
-        //     break;
-
-        // case 'h':
-        //     if (pBHand) pBHand->SetMotionType(eMotionType_HOME);
-        //     break;
-
-        // case 'r':
-        //     if (pBHand) pBHand->SetMotionType(eMotionType_READY);
-        //     break;
-
-        // case 'g':
-        //     if (pBHand) pBHand->SetMotionType(eMotionType_GRASP_3);
-        //     break;
-
-        // case 'k':
-        //     if (pBHand) pBHand->SetMotionType(eMotionType_GRASP_4);
-        //     break;
-
-        // case 'p':
-        //     if (pBHand) pBHand->SetMotionType(eMotionType_PINCH_IT);
-        //     break;
-
-        // case 'm':
-        //     if (pBHand) pBHand->SetMotionType(eMotionType_PINCH_MT);
-        //     break;
-
-        // case 'a':
-        //     if (pBHand) pBHand->SetMotionType(eMotionType_GRAVITY_COMP);
-        //     break;
-
-        // case 'e':
-        //     if (pBHand) pBHand->SetMotionType(eMotionType_ENVELOP);
-        //     break;
-
-        // case 'f':
-        //     if (pBHand) pBHand->SetMotionType(eMotionType_NONE);
-        //     break;
-
-        // case '1':
-        //     MotionRock();
-        //     break;
-
-        // case '2':
-        //     MotionScissors();
-        //     break;
-
-        // case '3':
-        //     MotionPaper();
-        //     break;
-        // }
+        std::cout << "Received: " << recv_str << std::endl;
+        
+        std::string response_str;
+        bool success = false;
+        
+        // Check if message is JSON (starts with '{')
+        if (!recv_str.empty() && recv_str[0] == '{') {
+            std::cout << "Processing JSON command" << std::endl;
+            
+            // Parse as JSON command
+            AllegroZmqResponse response = jsonParser->parseJsonAndExecute(recv_str);
+            for (int i = 0; i < MAX_DOF; i++) {
+                q_des[i] = jsonParser->GetDesiredQ()[i];
+            }
+            success = response.success;
+            response_str = jsonParser->responseToJson(response);
+            
+        } else{
+            std::cout << "Received non-JSON command" << std::endl;
+        }        
+        // Send response
+        zmq::message_t response_msg(response_str.length());
+        memcpy(response_msg.data(), response_str.data(), response_str.length());
+        socket.send(response_msg, zmq::send_flags::none);
+        
+        std::cout << "Response sent: " << response_str << std::endl;
     }
+    
+    delete jsonParser;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
 // Compute control torque for each joint using BHand library
 void ComputeTorque()
 {
-    if (!pBHand) return;
-    pBHand->SetJointPosition(q); // tell BHand library the current joint positions
-    pBHand->SetJointDesiredPosition(q_des);
-    pBHand->UpdateControl(0);
-    pBHand->GetJointTorque(tau_des);
-
+    if (!pBHand || !jsonParser) return;
+    jsonParser->UpdateControl(q, tau_des);
 //    static int j_active[] = {
 //        0, 0, 0, 0,
 //        0, 0, 0, 0,
